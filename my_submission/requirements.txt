@@ -1,0 +1,1 @@
+# No third-party packages. The solution runs on the Python standard library (3.9+).
