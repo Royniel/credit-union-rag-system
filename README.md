@@ -1,85 +1,93 @@
-# Hackathon: Build a Knowledge System That Knows What's True *Now*
+# Credit Union Knowledge System
 
-## The problem in one minute
+A question-answering system over five snapshots of a credit union's website, crawled between May and September 2026. It answers member questions with the value that is true now (or on a given date), cites its sources, lists the places where the site contradicts itself, and says "I don't know" when the site does not say.
 
-Our assistant answers credit-union members' questions ("What's the 6-month certificate rate?", "How much is a lost debit card?") using the credit union's own website.
+The solution lives in [`my_submission/`](my_submission/). The design rationale is in [`my_submission/NOTES.md`](my_submission/NOTES.md).
 
-We download (crawl) that website again and again over time. Each download is a **snapshot**. Websites are messy:
+## Results
 
-- A rate changes, but an old page or PDF still shows the old number.
-- A promotion ends, but its page is never taken down.
-- One page lists the **rate**, another the **APY**, and they look like they disagree.
-- A table has tiers (by balance, by term). Read it carelessly and every tier looks like a conflict.
-- Old newsletters and press releases describe offers from years ago.
+Scored with the provided harness on the public practice set:
 
-When we combined these snapshots, our system **gave members wrong or out-of-date answers**. Every eval question in this kit comes from a real problem like that.
-
-**Your mission:** build a system that reads the snapshots in date order and answers questions the way a careful human expert would: with the **current** value, the **right** tier, a **source**, and an honest "I don't know" when the site doesn't say.
-
-## What's in the box
-
-```
-snapshots_zip/           the five website downloads, one zip per date (oldest first)
-snapshots/README.md      what each download is and what changed between them
-eval/public_eval.jsonl   40 practice questions with expected answers
-starter/solution.py      a working (but naive) solution to copy from
-harness/                 the scorer we will use (same one you can run)
-```
-
-**You don't need to unzip anything.** The first time you run the scorer (below), it unpacks the zips into `snapshots/`, with one folder per download, each holding a `manifest.json` (url, title, date) and the pages as `pages/*.md`. After that the folders are there to browse. If you'd rather look first, unzip them yourself into `snapshots/`; the scorer leaves existing folders alone.
-
-## What you must hand in
-
-A folder with a file called `solution.py`, containing a `build()` function that returns an object with **three methods**:
-
-| Method | What it does |
+| Pillar | Score |
 |---|---|
-| `ingest(snapshot)` | We call it once per snapshot, oldest first. Learn from it. |
-| `answer(question, as_of=None)` | Answer a member's question. Without `as_of`, answer from the newest snapshot. With a date, answer as the website stood on that day. |
-| `conflicts()` | List every place where the website contradicts itself, which value you believe is right, and why. |
+| Accuracy | 0.89 (0 stale-value hits, 0 errors) |
+| Consistency | 1.0 (reworded and repeated questions agree) |
+| Speed | 1.0 (p95 latency about 0.02 s per answer) |
+| Ingest | about 5 s for all five snapshots |
 
-The exact shapes are defined in `harness/contract.py`; `starter/solution.py` already follows them. **Don't rename anything.** We plug your folder straight into our scorer.
+On the harness self-test site, which includes a conflicts answer key, the system scores 1.0 overall, including conflict detection and resolution.
 
-You can use any tools you like inside: search, embeddings, a graph, an LLM, plain rules. Add a `requirements.txt` if you need packages, and say in a short `NOTES.md` which API keys (if any) you need.
+## How it works
 
-## How to check your work
+The system is fully local: Python standard library only, no API keys, no network calls.
 
-From the top folder of this kit, run:
+1. **Versioned index.** Every page is split into chunks: one per table row (with its caption, column names and "Rates are effective as of" date), one per `Label: value` fact or fee line, and short prose passages. Each distinct chunk is stored once with a bitmask of the snapshots that contained it, so one BM25 index serves both the latest view and any "as of" view.
+2. **Source authority.** URLs are classified as official rate pages, core info pages, promos, news, blogs, documents or calculators. Rates are never quoted from calculators, blogs or news, which is where the stale numbers live.
+3. **What is current.** The newest snapshot (or the latest one on or before `as_of`) defines the view. Among pages that disagree, the later effective date and the higher authority win. Counts that drift over time come from the most recently dated statement, and offers the page itself marks as ended are ignored.
+4. **Qualifiers.** Jumbo vs standard, business vs personal, refinance vs purchase, intro vs ongoing rate, and term, balance and model-year tiers are parsed from the question and matched against each row. A row for a different tier is never offered as the answer.
+5. **Honesty.** The answer is "I don't know" (`confident=False`, no numbers) when a named entity is not on the site, when no rate evidence exists for the product asked about, when the best evidence covers a different term or tier, or when too little of the question is covered.
+6. **Conflicts.** Rate facts are tracked across pages and snapshots. Groups whose values disagree are reported with every competing value, the winner and the reason. A few prose claims (branch count, Forbes recognition, membership, assets, employees, routing number) are tracked the same way.
+
+### Why rules and retrieval instead of an LLM
+
+The scoring zeroes any answer that repeats a stale or wrong-tier value, rewards consistency and needs answers in under 2 seconds. Deterministic retrieval with explicit rules for authority, dates and tiers controls exactly which numbers appear in an answer, gives the same answer every time, and answers in milliseconds. The same rules also produce the conflict resolutions, so `answer()` and `conflicts()` never disagree.
+
+## Running it
+
+Requires Python 3.9 or newer. There is nothing to install.
+
+The website snapshots are not included in this repository, because the data may not be redistributed. Copy `snapshots_zip/` from the participant kit into the repository root first, then:
 
 ```bash
-python harness/run_eval.py --submission starter --eval eval/public_eval.jsonl
+python harness/run_eval.py --submission my_submission --eval eval/public_eval.jsonl
 ```
 
-The first run takes a few extra seconds while it unpacks the snapshots. Then it loads all five downloads into the starter, asks the 40 practice questions, and prints your score. To test your own solution, point `--submission` at your folder.
+The first run unpacks the zips into `snapshots/` (git ignores both folders).
 
-The starter scores low on purpose. Watch your score go up as you improve. Needs Python 3.9 or newer.
+To run the self-test, which needs no snapshot data:
 
-## How you will be scored
+```bash
+python harness/run_eval.py --submission my_submission \
+  --snapshots harness/selftest/snapshots --eval harness/selftest/eval.jsonl \
+  --conflicts-gold harness/selftest/conflicts_gold.json
+```
 
-We run a **larger, hidden question set** with the same format and the same scorer. Four things count:
+To use the system directly:
 
-| | Weight | What we look for |
-|---|---|---|
-| **Accuracy** | 55% | The current, correctly-tiered value is in your answer. Repeating an old or wrong value scores **zero** for that question, even if the right value is also there, so hedging by listing every number doesn't pay. Citing the right page earns a little extra. When the site doesn't say, the right answer is "I don't know". |
-| **Conflicts** | 15% | How many real contradictions you list in `conflicts()`, and whether you picked the right winner. |
-| **Consistency** | 15% | The same question asked in different words gets the same answer, and asking twice gives the same answer. |
-| **Speed** | 15% | How quickly you answer. Most answers in 2 seconds or less earns full marks; it drops to zero at 20 seconds. |
+```python
+import sys
+sys.path[:0] = ["harness", "my_submission"]
+from run_eval import load_snapshots
+from pathlib import Path
+import solution
 
-Speed and consistency are **multiplied by your accuracy**: a fast or consistent system that's wrong doesn't earn those points. Ingest (loading the snapshots) isn't timed for scoring, but must finish within 30 minutes.
+ks = solution.build()
+for snap in load_snapshots(Path("snapshots")):
+    ks.ingest(snap)
+print(ks.answer("What's the APR for a 60-month auto loan on a 2025 model-year vehicle?").text)
+print(ks.answer("What was the 10-month jumbo certificate special APY?", as_of="2026-05-31").text)
+print(len(ks.conflicts()), "conflicts")
+```
 
-Hidden questions include re-worded versions of the public ones, "as of" date questions, and questions about things that *changed* between snapshots.
+## Repository layout
 
-## A simple way to approach it
+```
+my_submission/
+  solution.py        build() and the ingest / answer / conflicts entry points
+  kb/text.py         normalization, tokenization, term, amount and date parsing
+  kb/chunker.py      page to chunks: table rows, fact lines, fee lines, passages
+  kb/authority.py    page classification and publication dates
+  kb/store.py        versioned chunk store and BM25 index
+  kb/query.py        question intent, qualifiers and numeric constraints
+  kb/answerer.py     reranking, evidence rules, answer composition, refusals
+  kb/conflicts.py    contradiction detection and resolution
+  NOTES.md           approach and rules for what counts as current
+  requirements.txt   empty: standard library only
+harness/, eval/, starter/, snapshots/README.md   from the participant kit
+```
 
-1. **Read the snapshots yourself first.** (Run the scorer once to unpack them, or unzip `snapshots_zip/`.) Pick five topics (a rate, a fee, branch hours) and follow them across the dates. You'll quickly see the kinds of mess.
-2. **Keep history, not just the latest copy.** Remember *when* you saw each fact and *where*.
-3. **Decide what "current" means.** Is the newer page right? Does an official rate sheet beat a blog post? What about an expired promotion? Write your rules down.
-4. **Respect qualifiers.** "6-month" vs "12-month", "rate" vs "APY", "Prime Checking" vs "Prime Business Checking". These are different facts, not conflicts.
-5. **Be honest.** If the website doesn't say, don't guess.
-6. **Run the public eval often.** Read the questions you miss, not just the score.
+## Known limitations
 
-## Rules
-
-- Use only the snapshots provided to answer questions. No live website calls.
-- Each `answer` call must finish within 60 seconds.
-- The data is a real credit union's public website, shared for this event only. Don't redistribute it.
+- Lexical retrieval misses some paraphrases that share no words with the page text. An embedding or LLM reranker could be added on top of the same evidence rules.
+- Eligibility details and some "how do I" procedures the site never states directly come back as partial answers.
+- When the site's own newest statement differs from what a question expects (for example, yearly volunteer counts), the system reports the newest statement.
