@@ -3,5 +3,6 @@ __pycache__/
 .DS_Store
 .env
 results/
-snapshots/
+# Credit-union snapshot data is not redistributed
+snapshots/0*/
 snapshots_zip/
